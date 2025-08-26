@@ -1,0 +1,16 @@
+{
+  "name": "web-rtc-by-ankit",
+  "description": "A WebRTC application",
+  "main": "index.js",
+  
+  "dependencies": {
+    "express": "^5.1.0",
+    "nodemon": "^3.1.10",
+    "ws": "^8.18.3"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon index.js",
+    "start": "node index.js"
+  }
+}
