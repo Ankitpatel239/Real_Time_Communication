@@ -733,7 +733,8 @@ server.listen(PORT, () => {
       // Update UI to show connecting state
       setConnState();
       
-      ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+      // ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+      ws = new WebSocket('wss://real-chat-with-ankit.vercel.app');
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'join', room, user: username }));
         setConnState();
