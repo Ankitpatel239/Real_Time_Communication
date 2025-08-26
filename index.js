@@ -1,7 +1,8 @@
-import express from "express";
-import http from "http";
 
-import { WebSocketServer } from "ws";
+import express from 'express';
+import http  from "http";
+
+import { WebSocketServer } from 'ws';
 
 const app = express();
 const server = http.createServer(app);
@@ -9,7 +10,6 @@ const wss = new WebSocketServer({ server });
 
 // --- In-memory room management (2 peers max per room) ---
 const rooms = new Map(); // roomId -> Set<ws>
-const chatHistory = new Map(); // roomId -> Array of messages
 
 function getOtherPeer(ws) {
   const set = rooms.get(ws.roomId);
@@ -20,26 +20,19 @@ function getOtherPeer(ws) {
   return null;
 }
 
-wss.on("connection", (ws) => {
-  ws.on("message", (raw) => {
+wss.on('connection', (ws) => {
+  ws.on('message', (raw) => {
     let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch {
-      return;
-    }
+    try { msg = JSON.parse(raw); } catch { return; }
 
-    if (msg.type === "join") {
-      const roomId = String(msg.room || "lobby");
-      const username = String(msg.user || "Guest");
+    if (msg.type === 'join') {
+      const roomId = String(msg.room || 'lobby');
+      const username = String(msg.user || 'Guest');
       let set = rooms.get(roomId);
-      if (!set) {
-        set = new Set();
-        rooms.set(roomId, set);
-      }
+      if (!set) { set = new Set(); rooms.set(roomId, set); }
 
       if (set.size >= 2) {
-        ws.send(JSON.stringify({ type: "room-full", room: roomId }));
+        ws.send(JSON.stringify({ type: 'room-full', room: roomId }));
         ws.close();
         return;
       }
@@ -48,120 +41,68 @@ wss.on("connection", (ws) => {
       ws.username = username;
       set.add(ws);
 
-      // Send chat history to the joining user
-      if (chatHistory.has(roomId)) {
-        ws.send(
-          JSON.stringify({
-            type: "chat-history",
-            history: chatHistory.get(roomId),
-          })
-        );
-      }
-      
       if (set.size === 1) {
         // first peer becomes leader (will create DataChannel)
-        ws.role = "leader";
-        ws.send(
-          JSON.stringify({ type: "room-status", role: "leader", room: roomId })
-        );
+        ws.role = 'leader';
+        ws.send(JSON.stringify({ type: 'room-status', role: 'leader', room: roomId }));
       } else if (set.size === 2) {
         // notify leader that a follower joined, so it should create an offer
-        const leader = [...set].find((p) => p.role === "leader") || [...set][0];
-        const follower = [...set].find((p) => p !== leader);
-        leader.send(JSON.stringify({ type: "peer-joined", user: username }));
-        follower.role = "follower";
-        follower.send(
-          JSON.stringify({
-            type: "room-status",
-            role: "follower",
-            room: roomId,
-          })
-        );
+        const leader = [...set].find(p => p.role === 'leader') || [...set][0];
+        const follower = [...set].find(p => p !== leader);
+        leader.send(JSON.stringify({ type: 'peer-joined', user: username }));
+        follower.role = 'follower';
+        follower.send(JSON.stringify({ type: 'room-status', role: 'follower', room: roomId }));
       }
       return;
     }
 
-    if (msg.type === "signal") {
+    if (msg.type === 'signal') {
       // forward SDP/ICE to the other peer
       const other = getOtherPeer(ws);
       if (other && other.readyState === 1) {
-        other.send(JSON.stringify({ type: "signal", data: msg.data }));
+        other.send(JSON.stringify({ type: 'signal', data: msg.data }));
       }
       return;
     }
-    
-    if (msg.type === "chat-message") {
-      // Store the message in history
-      const roomId = ws.roomId;
-      if (!chatHistory.has(roomId)) {
-        chatHistory.set(roomId, []);
-      }
 
-      const messageData = {
-        text: msg.text,
-        user: msg.user || ws.username,
-        timestamp: new Date().toISOString(),
-      };
-
-      chatHistory.get(roomId).push(messageData);
-
-      // Forward to other peer if connected
-      const other = getOtherPeer(ws);
-      if (other && other.readyState === 1) {
-        other.send(
-          JSON.stringify({
-            type: "chat-message",
-            text: msg.text,
-            user: msg.user || ws.username,
-            timestamp: messageData.timestamp,
-          })
-        );
-      }
-      return;
-    }
-    
-    if (msg.type === "goodbye") {
+    if (msg.type === 'goodbye') {
       ws.close();
       return;
     }
   });
 
-  ws.on("close", () => {
+  ws.on('close', () => {
     const roomId = ws.roomId;
     const set = rooms.get(roomId);
     if (set) {
       set.delete(ws);
       const other = [...set][0];
       if (other && other.readyState === 1) {
-        other.send(JSON.stringify({ type: "peer-left" }));
+        other.send(JSON.stringify({ type: 'peer-left' }));
       }
-      if (set.size === 0) {
-        // Optional: Clear history after room is empty for a while
-        // setTimeout(() => { if (!rooms.has(roomId)) chatHistory.delete(roomId); }, 300000); // 5 minutes
-      }
+      if (set.size === 0) rooms.delete(roomId);
     }
   });
 });
 
 // --- SSR page ---
-app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html");
+app.get('/', (req, res) => {
+ 
+  res.setHeader('Content-Type', 'text/html');
   res.send(html);
 });
 
-app.get("/privacy-policy", (req, res) => {
-  res.send(privacyAndPolicy);
-});
+app.get('/privacy-policy',(req, res) => {
+    res.send(privacyAndPolicy)
+})
 
 // --- Start server ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(
-    `\n✅ P2P chat running on  http://localhost:${PORT}\nOpen this URL in two different browsers/devices, join the same room, and chat!`
-  );
+  console.log(`\n✅ P2P chat running on  http://localhost:${PORT}\nOpen this URL in two different browsers/devices, join the same room, and chat!`);
 });
 
-const html = `<!DOCTYPE html>
+ const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -698,7 +639,7 @@ const html = `<!DOCTYPE html>
 
   <script>
     // --- helpers ---
-   const qs = new URLSearchParams(location.search);
+    const qs = new URLSearchParams(location.search);
     const $ = (id) => document.getElementById(id);
     const messages = $('messages');
     const typing = $('typing');
@@ -731,7 +672,7 @@ const html = `<!DOCTYPE html>
     userLabel.textContent = username;
     userRoleEl.textContent = role;
 
-    function logMsg(text, cls = '', user = '', timestamp = null) {
+    function logMsg(text, cls='', user='') {
       const div = document.createElement('div');
       div.className = 'msg ' + cls;
       
@@ -743,8 +684,7 @@ const html = `<!DOCTYPE html>
         nameSpan.textContent = user || (cls === 'me' ? 'You' : 'Peer');
         
         const timeSpan = document.createElement('span');
-        const time = timestamp ? new Date(timestamp) : new Date();
-        timeSpan.textContent = time.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        timeSpan.textContent = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         
         header.appendChild(nameSpan);
         header.appendChild(timeSpan);
@@ -853,20 +793,6 @@ const html = `<!DOCTYPE html>
             }
           }
         }
-        if (m.type === 'chat-history') {
-          // Load chat history
-          m.history.forEach(msg => {
-            const isMyMessage = msg.user === username;
-            logMsg(msg.text, isMyMessage ? 'me' : '', msg.user, msg.timestamp);
-          });
-          return;
-        }
-        if (m.type === 'chat-message') {
-          // Handle incoming chat message
-          const isMyMessage = m.user === username;
-          logMsg(m.text, isMyMessage ? 'me' : '', m.user, m.timestamp);
-          return;
-        }
       };
     }
 
@@ -936,16 +862,7 @@ const html = `<!DOCTYPE html>
           
           if (payload.kind === 'message') {
             typing.textContent = '';
-            // Send message to server for storage
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ 
-                type: 'chat-message', 
-                text: payload.text,
-                user: payload.user
-              }));
-            }
-            // Also display the message immediately for real-time feel
-            logMsg(payload.text, payload.user === username ? 'me' : '', payload.user);
+            logMsg(payload.text, '', payload.user);
           }
         } catch (e) { 
           console.warn('Failed to parse message:', e); 
@@ -971,8 +888,8 @@ const html = `<!DOCTYPE html>
       const text = input.value.trim();
       if (!text || !dc || dc.readyState !== 'open') return;
       
-      // Send via DataChannel for real-time communication
       dc.send(JSON.stringify({ kind: 'message', text, user: username }));
+      logMsg(text, 'me', username);
       input.value = '';
     };
     
@@ -1065,4 +982,4 @@ const privacyAndPolicy = `
         <h3>Contact Us</h3>
         <p>If you have any questions or concerns about this privacy policy, please contact us.</p>
     </div>
-`;
+`
