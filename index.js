@@ -10,6 +10,7 @@ const wss = new WebSocketServer({ server });
 // --- In-memory room management (2 peers max per room) ---
 const rooms = new Map(); // roomId -> Set<ws>
 const chatHistory = new Map(); // roomId -> Array of messages
+const users = new Map(); // userId -> ws
 
 function getOtherPeer(ws) {
   const set = rooms.get(ws.roomId);
@@ -29,116 +30,151 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    if (msg.type === "join") {
-      const roomId = String(msg.room || "lobby");
-      const username = String(msg.user || "Guest");
-      let set = rooms.get(roomId);
-      if (!set) {
-        set = new Set();
-        rooms.set(roomId, set);
+    switch (msg.type) {
+      case "join": {
+        const roomId = String(msg.room || "lobby");
+        const username = String(msg.user || "Guest");
+        let set = rooms.get(roomId);
+        if (!set) {
+          set = new Set();
+          rooms.set(roomId, set);
+        }
+
+        if (set.size >= 2) {
+          ws.send(JSON.stringify({ type: "room-full", room: roomId }));
+          ws.close();
+          return;
+        }
+
+        ws.roomId = roomId;
+        ws.username = username;
+        set.add(ws);
+
+        // Send chat history to the joining user
+        if (chatHistory.has(roomId)) {
+          ws.send(
+            JSON.stringify({
+              type: "chat-history",
+              history: chatHistory.get(roomId),
+            })
+          );
+        }
+
+        if (set.size === 1) {
+          // First peer = leader
+          ws.role = "leader";
+          ws.send(
+            JSON.stringify({
+              type: "room-status",
+              role: "leader",
+              room: roomId,
+            })
+          );
+        } else if (set.size === 2) {
+          // Notify leader
+          const leader =
+            [...set].find((p) => p.role === "leader") || [...set][0];
+          const follower = [...set].find((p) => p !== leader);
+          leader.send(JSON.stringify({ type: "peer-joined", user: username }));
+          follower.role = "follower";
+          follower.send(
+            JSON.stringify({
+              type: "room-status",
+              role: "follower",
+              room: roomId,
+            })
+          );
+        }
+        break;
       }
 
-      if (set.size >= 2) {
-        ws.send(JSON.stringify({ type: "room-full", room: roomId }));
+      case "signal": {
+        // Forward SDP/ICE to the other peer in the same room
+        const other = getOtherPeer(ws);
+        if (other && other.readyState === 1) {
+          other.send(JSON.stringify({ type: "signal", data: msg.data }));
+        }
+        break;
+      }
+
+      case "chat-message": {
+        const roomId = ws.roomId;
+        if (!chatHistory.has(roomId)) {
+          chatHistory.set(roomId, []);
+        }
+
+        const messageData = {
+          text: msg.text,
+          user: msg.user || ws.username,
+          timestamp: new Date().toISOString(),
+        };
+
+        chatHistory.get(roomId).push(messageData);
+
+        // Forward to other peer
+        const other = getOtherPeer(ws);
+        if (other && other.readyState === 1) {
+          other.send(
+            JSON.stringify({
+              type: "chat-message",
+              ...messageData,
+            })
+          );
+        }
+        break;
+      }
+
+      case "call": {
+        const { roomId, userName } = msg;
+        ws.roomId = roomId;
+        ws.userName = userName;
+
+        if (!rooms.has(roomId)) rooms.set(roomId, new Set());
+        rooms.get(roomId).add(ws);
+
+        console.log(`${userName} joined room ${roomId}`);
+        break;
+      }
+
+      case "offer":
+      case "answer":
+      case "ice": {
+        const peers = rooms.get(ws.roomId) || new Set();
+        peers.forEach((peer) => {
+          if (peer !== ws && peer.readyState === peer.OPEN) {
+            peer.send(JSON.stringify({ ...msg, from: ws.userName }));
+          }
+        });
+        break;
+      }
+
+      case "goodbye": {
         ws.close();
-        return;
+        break;
       }
-
-      ws.roomId = roomId;
-      ws.username = username;
-      set.add(ws);
-
-      // Send chat history to the joining user
-      if (chatHistory.has(roomId)) {
-        ws.send(
-          JSON.stringify({
-            type: "chat-history",
-            history: chatHistory.get(roomId),
-          })
-        );
-      }
-      
-      if (set.size === 1) {
-        // first peer becomes leader (will create DataChannel)
-        ws.role = "leader";
-        ws.send(
-          JSON.stringify({ type: "room-status", role: "leader", room: roomId })
-        );
-      } else if (set.size === 2) {
-        // notify leader that a follower joined, so it should create an offer
-        const leader = [...set].find((p) => p.role === "leader") || [...set][0];
-        const follower = [...set].find((p) => p !== leader);
-        leader.send(JSON.stringify({ type: "peer-joined", user: username }));
-        follower.role = "follower";
-        follower.send(
-          JSON.stringify({
-            type: "room-status",
-            role: "follower",
-            room: roomId,
-          })
-        );
-      }
-      return;
-    }
-
-    if (msg.type === "signal") {
-      // forward SDP/ICE to the other peer
-      const other = getOtherPeer(ws);
-      if (other && other.readyState === 1) {
-        other.send(JSON.stringify({ type: "signal", data: msg.data }));
-      }
-      return;
-    }
-    
-    if (msg.type === "chat-message") {
-      // Store the message in history
-      const roomId = ws.roomId;
-      if (!chatHistory.has(roomId)) {
-        chatHistory.set(roomId, []);
-      }
-
-      const messageData = {
-        text: msg.text,
-        user: msg.user || ws.username,
-        timestamp: new Date().toISOString(),
-      };
-
-      chatHistory.get(roomId).push(messageData);
-
-      // Forward to other peer if connected
-      const other = getOtherPeer(ws);
-      if (other && other.readyState === 1) {
-        other.send(
-          JSON.stringify({
-            type: "chat-message",
-            text: msg.text,
-            user: msg.user || ws.username,
-            timestamp: messageData.timestamp,
-          })
-        );
-      }
-      return;
-    }
-    
-    if (msg.type === "goodbye") {
-      ws.close();
-      return;
     }
   });
 
   ws.on("close", () => {
     const roomId = ws.roomId;
-    const set = rooms.get(roomId);
-    if (set) {
-      set.delete(ws);
-      const other = [...set][0];
-      if (other && other.readyState === 1) {
-        other.send(JSON.stringify({ type: "peer-left" }));
+    if (roomId) {
+      const set = rooms.get(roomId);
+      if (set) {
+        set.delete(ws);
+        const other = [...set][0];
+        if (other && other.readyState === 1) {
+          other.send(JSON.stringify({ type: "peer-left" }));
+        }
+        if (set.size === 0) {
+          rooms.delete(roomId);
+          // Optional: clear chat history after timeout
+          // setTimeout(() => chatHistory.delete(roomId), 300000);
+        }
       }
-      if (set.size === 0) {
-        // Optional: Clear history after room is empty for a while
-        // setTimeout(() => { if (!rooms.has(roomId)) chatHistory.delete(roomId); }, 300000); // 5 minutes
-      }
+    }
+
+    if (ws.userId) {
+      users.delete(ws.userId);
     }
   });
 });
@@ -151,6 +187,90 @@ app.get("/", (req, res) => {
 
 app.get("/privacy-policy", (req, res) => {
   res.send(privacyAndPolicy);
+});
+
+app.get("/webrtc/:roomId", (req, res) => {
+  const roomId = req.params.roomId;
+  const userName = req.query.userName || "";
+  res.send(`<!DOCTYPE html>
+<html>
+<head><title>WebRTC Room</title></head>
+<body>
+  <audio id="remoteAudio" autoplay></audio>
+  <button id="callBtn">Call Peer</button>
+  <button id="hangupBtn">Hang Up</button>
+
+  <script>
+  const $ = (id) => document.getElementById(id);
+    const callBtn = $("callBtn");
+    const hangupBtn = $("hangupBtn");
+    const remoteAudio = $("remoteAudio");
+    const roomId = "${roomId}";  // will be injected
+    const userName = "${userName}";
+    const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host);
+
+    let pc, localStream;
+
+    function createPeerConnection() {
+      const pc = new RTCPeerConnection();
+
+      pc.ontrack = (event) => {
+        remoteAudio.srcObject = event.streams[0];
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          ws.send(JSON.stringify({ type: "ice", candidate: event.candidate }));
+        }
+      };
+
+      return pc;
+    }
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "call", roomId, userName }));
+    };
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "offer") {
+        pc = createPeerConnection();
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: "answer", answer }));
+      }
+
+      if (msg.type === "answer") {
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
+      }
+
+      if (msg.type === "ice" && msg.candidate) {
+        try {
+          await pc.addIceCandidate(msg.candidate);
+        } catch (e) {
+          console.error("ICE error", e);
+        }
+      }
+    };
+
+    callBtn.onclick = async () => {
+      pc = createPeerConnection();
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: "offer", offer }));
+    };
+  </script>
+</body>
+</html>
+`);
 });
 
 // --- Start server ---
@@ -690,6 +810,22 @@ const html = `<!DOCTYPE html>
                 <div class="user-role" id="userRole">Unknown</div>
               </div>
             </li>
+            <li class="user-item">
+            <button type="button" class="user-button" id="micBtn">
+              <div class="user-avatar">
+               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="9" y="2" width="6" height="12" rx="3" stroke="white" stroke-width="2"/>
+                  <path d="M5 10v2a7 7 0 0 0 14 0v-2" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M12 22v-4" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <div class="user-details">
+                <div class="user-name">Mic</div>
+                <div class="user-role" id="userRole">Unknown</div>
+              </div>
+              </button>
+            </li>
+
           </ul>
         </div>
       </div>
@@ -1017,6 +1153,22 @@ const html = `<!DOCTYPE html>
 
     // auto connect on load
     connectSignaling();
+
+
+    const handleMicClick = () => {
+
+
+            window.location.href = "/webrtc/" + encodeURIComponent(room) + (username ? "?userName=" + encodeURIComponent(username) : "");
+
+    };
+
+    // Attach event listener for mic button
+    document.addEventListener('DOMContentLoaded', () => {
+      const micBtn = document.getElementById('micBtn');
+      if (micBtn) {
+        micBtn.addEventListener('click', handleMicClick);
+      }
+    });
   </script>
 </body>
 </html>`;
