@@ -194,28 +194,132 @@ app.get("/webrtc/:roomId", (req, res) => {
   const userName = req.query.userName || "";
   res.send(`<!DOCTYPE html>
 <html>
-<head><title>WebRTC Room</title></head>
+<head>
+  <title>WebRTC Room</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <style>
+    body {
+      background: #121826;
+      color: #e6edf3;
+      font-family: 'Inter', system-ui, sans-serif;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      background: #1a2235;
+      border-radius: 18px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+      padding: 32px 24px;
+      max-width: 400px;
+      width: 100%;
+      margin: 40px auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+    }
+    h2 {
+      margin: 0 0 12px 0;
+      font-size: 1.5rem;
+      color: #4da3ff;
+      font-weight: 700;
+      text-align: center;
+    }
+    .info {
+      font-size: 1rem;
+      color: #9fb0c3;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    button {
+      background: linear-gradient(90deg, #4da3ff, #3fb27f);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 12px 24px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.2s;
+      margin: 0 6px;
+      box-shadow: 0 2px 8px rgba(77,163,255,0.12);
+    }
+    button:hover {
+      background: linear-gradient(90deg, #6bb5ff, #3fb27f);
+      transform: translateY(-2px);
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    #remoteAudio {
+      width: 100%;
+      margin: 12px 0;
+      background: #253044;
+      border-radius: 8px;
+      outline: none;
+    }
+    .status {
+      font-size: 0.95rem;
+      color: #ff994d;
+      margin-top: 8px;
+      text-align: center;
+      min-height: 22px;
+    }
+    .user-label {
+      background: #19324a;
+      color: #e6edf3;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.95rem;
+      margin-bottom: 8px;
+      text-align: center;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
 <body>
-  <audio id="remoteAudio" autoplay></audio>
-  <button id="callBtn">Call Peer</button>
-  <button id="hangupBtn">Hang Up</button>
-
+  <div class="container">
+    <h2>WebRTC Audio Room</h2>
+    <div class="user-label">Room: <b>${roomId}</b> | User: <b>${userName || "Anonymous"}</b></div>
+    <div class="info">Peer-to-peer audio chat. Click <b>Call Peer</b> to start.</div>
+    <audio id="remoteAudio" controls autoplay></audio>
+    <div>
+      <button id="callBtn">Call Peer</button>
+      <button id="hangupBtn" disabled>Hang Up</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
   <script>
-  const $ = (id) => document.getElementById(id);
+    const $ = (id) => document.getElementById(id);
     const callBtn = $("callBtn");
     const hangupBtn = $("hangupBtn");
     const remoteAudio = $("remoteAudio");
-    const roomId = "${roomId}";  // will be injected
+    const statusEl = $("status");
+    const roomId = "${roomId}";
     const userName = "${userName}";
     const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host);
 
     let pc, localStream;
 
+    function setStatus(msg, color) {
+      statusEl.textContent = msg;
+      statusEl.style.color = color || "#ff994d";
+    }
+
     function createPeerConnection() {
-      const pc = new RTCPeerConnection();
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
 
       pc.ontrack = (event) => {
         remoteAudio.srcObject = event.streams[0];
+        setStatus("Receiving audio from peer", "#3fb27f");
       };
 
       pc.onicecandidate = (event) => {
@@ -224,17 +328,31 @@ app.get("/webrtc/:roomId", (req, res) => {
         }
       };
 
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "connected") {
+          setStatus("Connected!", "#3fb27f");
+          hangupBtn.disabled = false;
+        } else if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+          setStatus("Disconnected", "#ff4d4d");
+          hangupBtn.disabled = true;
+        } else if (pc.connectionState === "connecting") {
+          setStatus("Connecting...", "#ff994d");
+        }
+      };
+
       return pc;
     }
 
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: "call", roomId, userName }));
+      setStatus("Connected to signaling server", "#4da3ff");
     };
 
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
 
       if (msg.type === "offer") {
+        setStatus("Received offer, answering...", "#4da3ff");
         pc = createPeerConnection();
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -243,22 +361,33 @@ app.get("/webrtc/:roomId", (req, res) => {
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         ws.send(JSON.stringify({ type: "answer", answer }));
+        hangupBtn.disabled = false;
       }
 
       if (msg.type === "answer") {
+        setStatus("Peer accepted call", "#3fb27f");
         await pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
+        hangupBtn.disabled = false;
       }
 
       if (msg.type === "ice" && msg.candidate) {
         try {
           await pc.addIceCandidate(msg.candidate);
         } catch (e) {
-          console.error("ICE error", e);
+          setStatus("ICE error: " + e, "#ff4d4d");
         }
+      }
+
+      if (msg.type === "peer-left") {
+        setStatus("Peer left the room", "#ff4d4d");
+        cleanup();
       }
     };
 
     callBtn.onclick = async () => {
+      setStatus("Calling peer...", "#4da3ff");
+      callBtn.disabled = true;
+      hangupBtn.disabled = false;
       pc = createPeerConnection();
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -267,6 +396,31 @@ app.get("/webrtc/:roomId", (req, res) => {
       await pc.setLocalDescription(offer);
       ws.send(JSON.stringify({ type: "offer", offer }));
     };
+
+    hangupBtn.onclick = () => {
+      setStatus("Call ended", "#ff4d4d");
+      cleanup();
+      ws.send(JSON.stringify({ type: "goodbye" }));
+    };
+
+    function cleanup() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+      remoteAudio.srcObject = null;
+      callBtn.disabled = false;
+      hangupBtn.disabled = true;
+    }
+
+    window.addEventListener("beforeunload", () => {
+      ws.send(JSON.stringify({ type: "goodbye" }));
+      cleanup();
+    });
   </script>
 </body>
 </html>
